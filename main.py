@@ -3,9 +3,10 @@ from discord.ext import commands
 import os
 import requests
 
-# Эти переменные бот сам возьмет из Render
+# Бот сам возьмет эти данные из Render
 TOKEN = os.getenv("DISCORD_TOKEN")
 FACEIT_KEY = os.getenv("FACEIT_TOKEN")
+HUB_ID = os.getenv("HUB_ID")
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -13,36 +14,29 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
-    print(f"🚀 Бот {bot.user} запущен и видит ключ Faceit!")
+    print(f"✅ Бот {bot.user} подключен к хабу Project Evolution!")
 
 @bot.command()
-async def stats(ctx, nickname):
-    if not FACEIT_KEY:
-        await ctx.send("❌ Ошибка: FACEIT_TOKEN не найден в настройках Render!")
+async def hub(ctx):
+    if not HUB_ID or not FACEIT_KEY:
+        await ctx.send("❌ Настройки в Render не завершены!")
         return
 
     headers = {"Authorization": f"Bearer {FACEIT_KEY}"}
-    url = f"https://open.faceit.com/data/v4/players?nickname={nickname}"
+    # Запрос данных именно твоего хаба
+    url = f"https://open.faceit.com/data/v4/hubs/{HUB_ID}"
     
     res = requests.get(url, headers=headers)
-    
     if res.status_code == 200:
         data = res.json()
-        # Достаем данные CS2 (статистика по эло и уровню)
-        cs2 = data.get("games", {}).get("cs2", {})
-        elo = cs2.get("faceit_elo", "Нет данных")
-        lvl = cs2.get("skill_level", "—")
-        avatar = data.get("avatar", "")
+        name = data.get("name", "Project Evolution")
+        players = data.get("players_joined_count", "0")
         
-        embed = discord.Embed(title=f"Статистика игрока {nickname}", color=0xff5500)
-        if avatar:
-            embed.set_thumbnail(url=avatar)
-        embed.add_field(name="ELO", value=f"📈 {elo}", inline=True)
-        embed.add_field(name="Уровень", value=f"⭐ {lvl}", inline=True)
-        embed.set_footer(text="Project Evolution | Faceit API")
-        
+        embed = discord.Embed(title=f"Статистика хаба {name}", color=0xff5500)
+        embed.add_field(name="Всего игроков", value=f"👥 {players}", inline=True)
+        embed.set_footer(text="Данные считаны с Project Evolution")
         await ctx.send(embed=embed)
     else:
-        await ctx.send(f"❌ Игрок с ником `{nickname}` не найден на Faceit!")
+        await ctx.send("❌ Ошибка: Бот не смог получить данные с FACEIT.")
 
 bot.run(TOKEN)
