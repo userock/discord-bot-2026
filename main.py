@@ -22,24 +22,22 @@ class VisionAI:
             response = requests.get(url)
             img = Image.open(BytesIO(response.content))
             
-            # Предварительная обработка для ИИ (улучшаем читаемость)
+            # Предварительная обработка для ИИ
             img = img.convert('L')  # Перевод в градации серого
             enhancer = ImageEnhance.Contrast(img)
-            img = enhancer.enhance(2.5)  # Задираем контраст для четкости цифр
+            img = enhancer.enhance(2.5)  # Задираем контраст для четкости
             
             # Чтение текста через Tesseract
-            # Конфиг --psm 6 говорит ИИ искать блоки текста, подходящие под таблицу
             text = pytesseract.image_to_string(img, config='--oem 3 --psm 6')
             
             # Ищем паттерны KDA (цифра/цифра/цифра)
             kda_match = re.findall(r'(\d+)[\s/|-]+(\d+)[\s/|-]+(\d+)', text)
             
             if kda_match:
-                # Возвращаем Киллы, Ассисты, Смерти
                 k, d, a = kda_match[0] 
                 return int(k), int(a), int(d)
             
-            # Запасной вариант: просто ищем любые последовательности цифр
+            # Запасной вариант поиска цифр
             nums = re.findall(r'\d+', text)
             if len(nums) >= 3:
                 return int(nums[0]), int(nums[1]), int(nums[2])
@@ -108,23 +106,21 @@ RANKS = {"Bronze": 0, "Silver": 1200, "Gold": 1600, "Platinum": 2100, "Diamond":
 @bot.command()
 async def result(ctx, status: str = "win"):
     if not ctx.message.attachments:
-        return await ctx.send("❌ **ОШИБКА:** Сначала прикрепи скриншот с таблицей счета!")
+        return await ctx.send("❌ **ОШИБКА:** Сначала прикрепи скриншот!")
 
     status = status.lower()
-    msg_status = await ctx.send("🌀 **ИИ-АНАЛИЗ:** Считываю данные со скриншота...")
+    msg_status = await ctx.send("🌀 **ИИ-АНАЛИЗ:** Считываю данные...")
     
-    # Запуск обработки изображения
     img_url = ctx.message.attachments[0].url
     stats = await VisionAI.process_image(img_url)
 
     if not stats:
         await msg_status.delete()
-        return await ctx.send("❌ **ИИ-ОШИБКА:** Не удалось распознать KDA. Попробуй более четкий скриншот или введи вручную.")
+        return await ctx.send("❌ **ИИ-ОШИБКА:** Не удалось распознать KDA.")
 
     k, a, d = stats
     await msg_status.delete()
 
-    # Расчет ELO (Победа +25, Поражение -20)
     is_win = status in ["win", "победа", "w"]
     elo_delta = 25 if is_win else -20
     
@@ -148,23 +144,22 @@ async def result(ctx, status: str = "win"):
         if str(reaction.emoji) == "✅":
             hub_chan = bot.get_channel(int(HUB_ID))
             if hub_chan:
-                await hub_chan.send(content=f"📡 **НОВЫЙ ОТЧЕТ ОТ {ctx.author}:**", embed=emb)
-                await ctx.send("✅ **ГОТОВО:** Данные подтверждены и отправлены в HUB.")
+                await hub_chan.send(content=f"📡 **ОТЧЕТ ОТ {ctx.author}:**", embed=emb)
+                await ctx.send("✅ **ГОТОВО:** Данные отправлены в HUB.")
             else:
-                await ctx.send("❌ **ОШИБКА:** Канал HUB не найден. Проверь HUB_ID в коде.")
+                await ctx.send("❌ **ОШИБКА:** Канал HUB не найден.")
         else:
-            await ctx.send("❌ **ОТМЕНА:** ИИ ошибся. Попробуй загрузить другой скриншот.")
+            await ctx.send("❌ **ОТМЕНА:** Попробуй другой скриншот.")
             
     except asyncio.TimeoutError:
         await ctx.send("⏳ Время подтверждения вышло.")
 
 # ==========================================
-# [6] ОБРАБОТКА ХАБА (ОДОБРЕНИЕ АДМИНОМ)
+# [6] ОБРАБОТКА ХАБА (ОДОБРЕНИЕ)
 # ==========================================
 @bot.event
 async def on_reaction_add(reaction, user):
     if user.bot or str(reaction.message.channel.id) != str(HUB_ID): return
-    # Только админы могут подтверждать в Хабе
     if not user.guild_permissions.manage_messages: return
 
     if str(reaction.emoji) == "✅":
@@ -172,7 +167,6 @@ async def on_reaction_add(reaction, user):
         emb = reaction.message.embeds[0]
         
         try:
-            # Вытаскиваем данные из скрытого Payload в футере
             data = emb.footer.text.split("PAYLOAD:")[1].split("|")
             uid, elo_add, k, a, d = int(data[0]), int(data[1]), int(data[2]), int(data[3]), int(data[4])
             
@@ -183,7 +177,7 @@ async def on_reaction_add(reaction, user):
             else: u['l'] += 1
             db.save()
             
-            await reaction.message.channel.send(f"🏆 **МАТЧ ЗАЧИСЛЕН:** Игрок <@{uid}> обновлен. ELO: **{u['elo']}**")
+            await reaction.message.channel.send(f"🏆 **МАТЧ ЗАЧИСЛЕН:** Игрок <@{uid}> обновлен.")
             await reaction.message.delete()
         except Exception as e:
             print(f"Error in Hub confirmation: {e}")
@@ -196,7 +190,6 @@ async def profile(ctx, member: discord.Member = None):
     member = member or ctx.author
     u = db.get_user(member.id)
     
-    # Определение ранга
     current_rank = "Bronze"
     for r, v in RANKS.items():
         if u['elo'] >= v: current_rank = r
@@ -204,13 +197,11 @@ async def profile(ctx, member: discord.Member = None):
     emb = discord.Embed(title=f"📁 ПРОФИЛЬ: {member.name.upper()}", color=0x00d9ff)
     emb.set_thumbnail(url=member.display_avatar.url)
     emb.add_field(name="🏆 РАНГ", value=f"`{current_rank}` | ELO: **{u['elo']}**", inline=True)
-    emb.add_field(name="💳 БАЛАНС", value=f"`{u['money']}$`", inline=True)
-    emb.add_field(name="📊 БОЕВАЯ СТАТИСТИКА", value=f"```fix\nK/A/D: {u['k']}/{u['a']}/{u['d']}\nWinrate: {u['w']}W - {u['l']}L\n```", inline=False)
+    emb.add_field(name="📊 СТАТИСТИКА", value=f"```fix\nK/A/D: {u['k']}/{u['a']}/{u['d']}\n```", inline=False)
     
-    # ИИ Аналитика стиля игры
     kda_ratio = (u['k'] + u['a']) / u['d'] if u['d'] > 0 else u['k']
     style = "Агрессивный доминатор" if kda_ratio > 2.5 else "Стабильный тактик"
-    emb.add_field(name="🤖 ИИ-АНАЛИЗ", value=f"Стиль: **{style}**\nСовет: _Тренируй точность для перехода в следующий ранг._", inline=False)
+    emb.add_field(name="🤖 ИИ-АНАЛИЗ", value=f"Стиль: **{style}**", inline=False)
     
     await ctx.send(embed=emb)
 
@@ -218,14 +209,13 @@ async def profile(ctx, member: discord.Member = None):
 async def work(ctx):
     u = db.get_user(ctx.author.id)
     if time.time() < u['t_work']:
-        rem = int(u['t_work'] - time.time())
-        return await ctx.send(f"⏳ Ты устал. Отдохни еще {rem//60} мин.")
+        return await ctx.send(f"⏳ Ты устал.")
     
     reward = random.randint(1000, 3500)
     u['money'] += reward
-    u['t_work'] = time.time() + 900 # КД 15 минут
+    u['t_work'] = time.time() + 900
     db.save()
-    await ctx.send(f"💰 **РАБОТА:** Ты выполнил заказ и получил **{reward}$**")
+    await ctx.send(f"💰 **РАБОТА:** Получено **{reward}$**")
 
 # ==========================================
 # [8] ЗАПУСК
@@ -233,7 +223,6 @@ async def work(ctx):
 @bot.event
 async def on_ready():
     print(f"--- Evolution Overlord V80: Neural Vision Online ---")
-    print(f"Logged in as: {bot.user}")
     keep_alive()
 
 bot.run(TOKEN)
