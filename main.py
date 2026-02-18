@@ -4,115 +4,114 @@ import os, random, datetime, asyncio
 from flask import Flask
 from threading import Thread
 
-# --- 1. СЕРВЕР ДЛЯ ПОДДЕРЖКИ ОНЛАЙНА ---
+# --- 1. ВЕЧНЫЙ ОНЛАЙН ---
 app = Flask('')
 @app.route('/')
-def home(): return "Evolution Mega-System: Online"
+def home(): return "Evolution System: 24/7 Online"
 def run(): app.run(host='0.0.0.0', port=8080)
 def keep_alive(): Thread(target=run).start()
 
-# --- 2. НАСТРОЙКИ ---
+# --- 2. КОНФИГ ---
 TOKEN = os.getenv("DISCORD_TOKEN")
 MOD_ID = os.getenv("HUB_ID") 
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-db = {} # База данных
+db = {} # Наша база данных
 
 def get_u(uid):
     uid = str(uid)
     if uid not in db:
         db[uid] = {
             "elo": 1000, "wins": 0, "losses": 0, "k": 0, "a": 0, "d": 0, 
-            "money": 1000, "xp": 0, "lvl": 1, "last_work": None
+            "money": 1000, "xp": 0, "lvl": 1, "last_work": 0 # last_work в секундах
         }
     return db[uid]
 
-# --- 3. АКТИВНОСТЬ 24/7 ---
+# --- 3. АКТИВНОСТЬ ---
 @tasks.loop(minutes=2)
 async def stay_active():
-    # Статус стриминга лучше всего держит бота в приоритете хостинга
     await bot.change_presence(activity=discord.Streaming(name="EVOLUTION SYSTEM", url="https://twitch.tv/discord"))
 
-# --- 4. КРАСИВОЕ МЕНЮ HELP ---
+# --- 4. САМЫЙ ОФИГЕННЫЙ HELP ---
 @bot.command()
 async def help(ctx):
     embed = discord.Embed(
-        title="📂 ГЛАВНОЕ МЕНЮ КОМАНД",
-        description="Используйте префикс `!` для управления системой.",
-        color=0x2f3136
+        title="✨ ПАНЕЛЬ УПРАВЛЕНИЯ EVOLUTION",
+        description="Все команды системы разделены по категориям для удобства.",
+        color=0x00ffcc
     )
     
     embed.add_field(
-        name="🎮 ГЕЙМИНГ",
-        value="`!result K A D win/loss` — Отправить отчет\n`!profile` — Твой прогресс\n`!top` — Лидеры рейтинга",
+        name="🎮 ИГРОВОЙ МОДУЛЬ",
+        value="`!result K A D win/loss` — Отчет матча\n`!profile` — Твоя статистика\n`!top` — Лидеры рейтинга",
         inline=False
     )
     
     embed.add_field(
-        name="💰 ЭКОНОМИКА",
-        value="`!work` — Пойти работать (КД 5-10 мин)\n`!casino [ставка]` — Играть на деньги\n`!shop` — Магазин ролей",
+        name="💰 ЭКОНОМИЧЕСКИЙ МОДУЛЬ",
+        value="`!work` — Работа (**КД 5-10 минут**)\n`!casino [ставка]` — Рискнуть деньгами\n`!shop` — Магазин ролей",
         inline=False
     )
     
     embed.add_field(
-        name="🛠️ СЕРВИС",
-        value="`!clear [число]` — Очистка чата\n`!ping` — Скорость ответа",
+        name="⚙️ СИСТЕМНЫЕ КОМАНДЫ",
+        value="`!clear [число]` — Удалить сообщения\n`!ping` — Скорость ответа",
         inline=False
     )
     
-    embed.set_footer(text=f"Запросил: {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
-    embed.set_image(url="https://i.imgur.com/your_cool_line_image.png") # Можно вставить ссылку на разделитель
+    embed.set_footer(text=f"Система активна | {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
+    embed.set_thumbnail(url=bot.user.display_avatar.url)
     
     await ctx.send(embed=embed)
 
-# --- 5. КОМАНДА РАБОТЫ С КД (5-10 МИНУТ) ---
+# --- 5. КОМАНДА WORK С ЖЕСТКИМ КД ---
 @bot.command()
 async def work(ctx):
+    import time
     u = get_u(ctx.author.id)
-    now = datetime.datetime.now()
+    now = int(time.time()) # Текущее время в секундах
     
-    # Проверка КД
-    if u['last_work'] is not None:
-        delta = now - u['last_work']
-        # Случайное КД от 300 до 600 секунд (5-10 мин) сохраняется в логике
-        wait_time = u.get('next_cooldown', 300) 
-        
-        if delta.total_seconds() < wait_time:
-            remaining = int(wait_time - delta.total_seconds())
-            return await ctx.send(f"⏳ {ctx.author.mention}, ты слишком устал! Отдохни еще **{remaining // 60}м {remaining % 60}с**.")
+    # КД хранится в u['last_work'] (когда можно будет работать снова)
+    if now < u['last_work']:
+        remaining = u['last_work'] - now
+        minutes = remaining // 60
+        seconds = remaining % 60
+        return await ctx.send(f"⏳ **{ctx.author.name}**, ты еще не восстановил силы! Приходи через **{minutes}м {seconds}с**.")
 
-    # Логика работы
-    gain = random.randint(400, 1200)
+    # Если КД прошло:
+    gain = random.randint(500, 1500)
     u['money'] += gain
-    u['last_work'] = now
-    u['next_cooldown'] = random.randint(300, 600) # Устанавливаем КД на следующий раз
     
-    await ctx.send(f"💰 **{ctx.author.name}**, ты выполнил заказ и получил **{gain}$**!\nСледующая смена доступна через {u['next_cooldown'] // 60} мин.")
+    # Устанавливаем время следующей работы (сейчас + от 300 до 600 секунд)
+    cooldown = random.randint(300, 600)
+    u['last_work'] = now + cooldown
+    
+    await ctx.send(f"💰 **{ctx.author.name}**, ты выполнил сложный заказ и получил **{gain}$**!\n*Следующая смена будет доступна через {cooldown // 60} мин.*")
 
-# --- 6. РЕЗУЛЬТАТЫ И ПРОВЕРКА ---
+# --- 6. РЕЗУЛЬТАТЫ ---
 @bot.command()
 async def result(ctx, k: int, a: int, d: int, status: str = "win"):
     if not ctx.message.attachments:
-        return await ctx.send("❌ Прикрепи скриншот таблицы!")
+        return await ctx.send("❌ Ты забыл прикрепить скриншот!")
     
     elo_change = 25 if status.lower() == "win" else -20
     m_chan = bot.get_channel(int(MOD_ID))
     
     if not m_chan: return await ctx.send("❌ Настрой HUB_ID в Render!")
 
-    emb = discord.Embed(title="⚔️ НОВАЯ ПРОВЕРКА", color=0x7289da)
-    emb.add_field(name="👤 Игрок", value=ctx.author.mention, inline=True)
-    emb.add_field(name="🏆 Итог", value=status.upper(), inline=True)
-    emb.add_field(name="📊 K / A / D", value=f"**{k} / {a} / {d}**", inline=False)
+    emb = discord.Embed(title="⚔️ НОВАЯ ЗАЯВКА", color=0x5865f2)
+    emb.add_field(name="Игрок", value=ctx.author.mention, inline=True)
+    emb.add_field(name="Итог", value=status.upper(), inline=True)
+    emb.add_field(name="K / A / D", value=f"**{k} / {a} / {d}**", inline=False)
     emb.set_image(url=ctx.message.attachments[0].url)
     emb.set_footer(text=f"ID:{ctx.author.id}|ELO:{elo_change}|K:{k}|A:{a}|D:{d}")
 
     msg = await m_chan.send(embed=emb)
     await msg.add_reaction("✅")
     await msg.add_reaction("❌")
-    await ctx.send(f"📡 Данные `{k}/{a}/{d}` отправлены в HUB на проверку.")
+    await ctx.send(f"📡 Статистика отправлена в HUB. Жди подтверждения!")
 
 @bot.event
 async def on_reaction_add(reaction, user):
@@ -128,19 +127,18 @@ async def on_reaction_add(reaction, user):
         u['k'] += int(data['K']); u['a'] += int(data['A']); u['d'] += int(data['D'])
         if int(data['ELO']) > 0: u['wins'] += 1
         else: u['losses'] += 1
-        await reaction.message.channel.send(f"✅ Результат <@{data['ID']}> подтвержден!")
+        await reaction.message.channel.send(f"✅ Стата игрока <@{data['ID']}> успешно обновлена!")
     elif str(reaction.emoji) == "❌":
-        await reaction.message.channel.send(f"❌ Результат <@{data['ID']}> отклонен.")
+        await reaction.message.channel.send(f"❌ Результат игро <@{data['ID']}> отклонен.")
     await reaction.message.delete()
 
-# --- 7. ПРОФИЛЬ И КАЗИНО ---
+# --- 7. ПРОФИЛЬ, КАЗИНО, ОЧИСТКА ---
 @bot.command()
 async def profile(ctx, m: discord.Member = None):
     m = m or ctx.author; u = get_u(m.id)
     e = discord.Embed(title=f"👤 ПРОФИЛЬ: {m.name}", color=0x00ffcc)
     e.add_field(name="📈 ELO", value=f"**{u['elo']}**", inline=True)
-    e.add_field(name="✨ Уровень", value=f"**{u['lvl']}**", inline=True)
-    e.add_field(name="💰 Баланс", value=f"**{u['money']}$**", inline=True)
+    e.add_field(name="💰 БАЛАНС", value=f"**{u['money']}$**", inline=True)
     e.add_field(name="⚔️ K/A/D", value=f"`{u['k']} / {u['a']} / {u['d']}`", inline=False)
     e.set_thumbnail(url=m.display_avatar.url)
     await ctx.send(embed=e)
@@ -156,10 +154,16 @@ async def casino(ctx, bet: int):
         u['money'] -= bet
         await ctx.send(f"📉 **ЛУЗ!** Ты проиграл **{bet}$**. Баланс: {u['money']}$")
 
-# --- 8. ЗАПУСК ---
+@bot.command()
+@commands.has_permissions(manage_messages=True)
+async def clear(ctx, amount: int = 10):
+    await ctx.channel.purge(limit=amount + 1)
+    await ctx.send(f"🗑️ Удалено **{amount}** сообщений.", delete_after=3)
+
+# --- 8. СТАРТ ---
 @bot.event
 async def on_ready():
-    print(f"🚀 СИСТЕМА ОНЛАЙН: {bot.user.name}")
+    print(f"🔥 Система Evolution в сети под именем {bot.user.name}")
     stay_active.start()
 
 keep_alive()
