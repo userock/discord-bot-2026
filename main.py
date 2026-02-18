@@ -1,225 +1,301 @@
 import discord
 from discord.ext import commands, tasks
-import os, random, datetime, time, json, asyncio
+import os, random, datetime, time, json, asyncio, logging
 from flask import Flask
 from threading import Thread
 
-# --- [ 1. ВЕБ-СЕРВЕР ДЛЯ ПОДДЕРЖКИ ЖИЗНИ ] ---
+# ==========================================
+# 1. ЛОГИРОВАНИЕ (ДЛЯ ОТЛАДКИ В RENDER)
+# ==========================================
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger('EvolutionBot')
+
+# ==========================================
+# 2. ВЕБ-СЕРВЕР (KEEP ALIVE)
+# ==========================================
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "Evolution System v7.0: Heavy Engine Online"
+    return "Evolution Engine Status: OPERATIONAL"
 
-def run_server():
+def run_web_server():
     app.run(host='0.0.0.0', port=8080)
 
 def keep_alive():
-    t = Thread(target=run_server)
+    t = Thread(target=run_web_server)
+    t.daemon = True
     t.start()
 
-# --- [ 2. СИСТЕМА ХРАНЕНИЯ ДАННЫХ ] ---
-class Database:
-    def __init__(self, filename="database.json"):
-        self.filename = filename
-        self.data = self.load()
+# ==========================================
+# 3. СИСТЕМА БАЗЫ ДАННЫХ (JSON PERSISTENCE)
+# ==========================================
+class PersistentDB:
+    def __init__(self, path="database.json"):
+        self.path = path
+        self.data = self._load()
 
-    def load(self):
-        if os.path.exists(self.filename):
+    def _load(self):
+        if os.path.exists(self.path):
             try:
-                with open(self.filename, "r", encoding="utf-8") as f:
+                with open(self.path, "r", encoding="utf-8") as f:
                     return json.load(f)
             except Exception as e:
-                print(f"[ERROR] Ошибка загрузки БД: {e}")
+                logger.error(f"Ошибка загрузки БД: {e}")
                 return {}
         return {}
 
     def save(self):
         try:
-            with open(self.filename, "w", encoding="utf-8") as f:
+            with open(self.path, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, ensure_ascii=False, indent=4)
         except Exception as e:
-            print(f"[ERROR] Ошибка сохранения БД: {e}")
+            logger.error(f"Ошибка сохранения БД: {e}")
 
     def get_user(self, uid):
         uid = str(uid)
         if uid not in self.data:
             self.data[uid] = {
-                "elo": 1000, "wins": 0, "losses": 0,
-                "k": 0, "a": 0, "d": 0,
-                "money": 1000, "lvl": 1, "xp": 0,
-                "last_work": 0, "inventory": []
+                "elo": 1000,
+                "money": 500,
+                "stats": {"k": 0, "a": 0, "d": 0, "w": 0, "l": 0},
+                "level": 1,
+                "xp": 0,
+                "last_work": 0,
+                "inventory": []
             }
             self.save()
         return self.data[uid]
 
-db = Database()
+db = PersistentDB()
 
-# --- [ 3. КОНФИГУРАЦИЯ БОТА ] ---
+# ==========================================
+# 4. НАСТРОЙКИ БОТА
+# ==========================================
 TOKEN = os.getenv("DISCORD_TOKEN")
-MOD_ID = os.getenv("HUB_ID")
+MOD_CHANNEL_ID = os.getenv("HUB_ID") # Канал, куда летят скрины
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
-RANKS = {
-    "Bronze": 1000,
-    "Silver": 1300,
-    "Gold": 1600,
-    "Platinum": 1900,
-    "Diamond": 2200
+# Названия ролей и пороги ELO
+RANK_ROLES = {
+    "🌑 Bronze": 0,
+    "🥈 Silver": 1200,
+    "🔱 Gold": 1500,
+    "💎 Platinum": 1850,
+    "👑 Diamond": 2200,
+    "🔥 Immortal": 2600
 }
 
-# --- [ 4. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ] ---
-async def manage_roles(member, elo):
-    """Автоматическая смена ролей в зависимости от ELO"""
-    target_role_name = "Bronze"
-    for r_name, val in RANKS.items():
-        if elo >= val:
+# ==========================================
+# 5. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ==========================================
+async def update_member_roles(member, current_elo):
+    """Автоматически обновляет роль игрока в зависимости от его ELO"""
+    if not member or not hasattr(member, 'guild'):
+        return
+
+    # Определяем, какая роль должна быть
+    target_role_name = "🌑 Bronze"
+    for r_name, threshold in RANK_ROLES.items():
+        if current_elo >= threshold:
             target_role_name = r_name
+
+    guild = member.guild
+    # Проверяем, существует ли такая роль на сервере, если нет - создаем (опционально)
+    target_role = discord.utils.get(guild.roles, name=target_role_name)
     
-    # Находим нужную роль на сервере
-    new_role = discord.utils.get(member.guild.roles, name=target_role_name)
-    if not new_role:
-        print(f"[WARN] Роль {target_role_name} не найдена на сервере!")
+    if not target_role:
+        logger.warning(f"Роль {target_role_name} не найдена на сервере {guild.name}")
         return
 
-    # Если роль уже есть — ничего не делаем
-    if new_role in member.roles:
+    # Если у игрока уже есть эта роль, ничего не делаем
+    if target_role in member.roles:
         return
 
-    # Удаляем все старые ранговые роли
-    roles_to_remove = [r for r in member.roles if r.name in RANKS.keys()]
-    
+    # Список всех ранговых ролей для удаления
+    all_rank_role_names = list(RANK_ROLES.keys())
+    roles_to_remove = [r for r in member.roles if r.name in all_rank_role_names]
+
     try:
         if roles_to_remove:
-            await member.remove_roles(*roles_to_remove, reason="Смена ранга ELO")
-        await member.add_roles(new_role, reason="Достижение нового порога ELO")
+            await member.remove_roles(*roles_to_remove)
+        await member.add_roles(target_role)
+        logger.info(f"Обновлена роль для {member.name}: {target_role_name}")
     except discord.Forbidden:
-        print("[ERROR] Недостаточно прав для смены ролей! Перетяни роль бота выше всех.")
-    except Exception as e:
-        print(f"[ERROR] Ошибка при выдаче роли: {e}")
+        logger.error(f"Нет прав на изменение ролей для {member.name}. Поднимите роль бота выше!")
 
-# --- [ 5. ОСНОВНЫЕ КОМАНДЫ (ГЕЙМИНГ) ] ---
+# ==========================================
+# 6. КРАСИВЕЙШЕЕ МЕНЮ HELP (EMBED)
+# ==========================================
+@bot.command()
+async def help(ctx):
+    embed = discord.Embed(
+        title="🌟 ЦЕНТР УПРАВЛЕНИЯ EVOLUTION",
+        description=(
+            "Добро пожаловать в элитную систему мониторинга матчей и экономики.\n"
+            "Ниже приведен список доступных модулей и их функций.\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=0x2b2d31,
+        timestamp=datetime.datetime.now()
+    )
+
+    embed.add_field(
+        name="🎮 ГЕЙМИНГ & РЕЙТИНГ",
+        value=(
+            "`!result K A D win/loss` — Отправить отчет матча (обязательно скрин)\n"
+            "`!profile [@user]` — Просмотр карточки игрока и ELO\n"
+            "`!top` — Топ-10 лучших игроков сервера"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="💰 ЭКОНОМИКА & ФАН",
+        value=(
+            "`!work` — Пойти на смену (КД 5-10 минут)\n"
+            "`!casino [сумма]` — Испытать удачу (шанс 45%)\n"
+            "`!daily` — Ежедневный бонус валюты"
+        ),
+        inline=False
+    )
+
+    if ctx.author.guild_permissions.administrator:
+        embed.add_field(
+            name="🛠️ АДМИНИСТРАЦИЯ",
+            value=(
+                "`!set_elo @user [v]` — Установить рейтинг вручную\n"
+                "`!add_money @user [v]` — Выдать валюту игроку\n"
+                "`!clear [кол-во]` — Быстрая очистка чата"
+            ),
+            inline=False
+        )
+
+    embed.set_thumbnail(url=bot.user.display_avatar.url)
+    embed.set_footer(text=f"Запросил: {ctx.author.name} • Версия 10.4.2", icon_url=ctx.author.display_avatar.url)
+    
+    await ctx.send(embed=embed)
+
+# ==========================================
+# 7. СИСТЕМА ПРОВЕРКИ МАТЧЕЙ (CORE)
+# ==========================================
 @bot.command()
 async def result(ctx, k: int, a: int, d: int, status: str = "win"):
-    """
-    Отправка результата матча.
-    Использование: !result [K] [A] [D] [win/loss] + Скриншот
-    """
-    # 1. Проверка на вложения
+    """Отправка результата в HUB на проверку"""
     if not ctx.message.attachments:
-        emb = discord.Embed(description="❌ **Ошибка:** Вы должны прикрепить скриншот с результатами матча.", color=0xff4444)
-        return await ctx.send(embed=emb)
+        return await ctx.send("❌ **Ошибка:** Вы должны прикрепить скриншот (доказательство) к сообщению!")
 
-    # 2. Проверка канала модерации
-    if not MOD_ID:
-        return await ctx.send("❌ **Критическая ошибка:** Переменная HUB_ID не настроена в Render.")
-    
-    hub_channel = bot.get_channel(int(MOD_ID))
-    if not hub_channel:
-        return await ctx.send("❌ **Ошибка:** Бот не видит канал HUB. Проверьте ID и права доступа.")
+    if not MOD_CHANNEL_ID:
+        return await ctx.send("❌ **Ошибка настройки:** Переменная `HUB_ID` не задана в Render.")
 
-    # 3. Подготовка данных
-    res_type = status.lower()
-    elo_change = 25 if res_type == "win" else -20
-    color = 0x44ff44 if res_type == "win" else 0xff4444
+    mod_channel = bot.get_channel(int(MOD_CHANNEL_ID))
+    if not mod_channel:
+        return await ctx.send("❌ **Ошибка:** Бот не видит канал HUB. Проверьте права и ID.")
 
-    # 4. Создание заявки для HUB
-    hub_emb = discord.Embed(title="⚔️ НОВАЯ ЗАЯВКА НА ПРОВЕРКУ", color=color, timestamp=datetime.datetime.now())
-    hub_emb.set_author(name=ctx.author.name, icon_url=ctx.author.display_avatar.url)
-    
-    hub_emb.add_field(name="👤 Игрок", value=ctx.author.mention, inline=True)
-    hub_emb.add_field(name="🏆 Результат", value=res_type.upper(), inline=True)
-    hub_emb.add_field(name="📊 Боевая статистика", value=f"```Убийства: {k}\nПомощь:    {a}\nСмерти:    {d}\nKDR:      {round(k/d, 2) if d > 0 else k}```", inline=False)
-    
+    res_status = status.lower()
+    elo_gain = 25 if res_status == "win" else -20
+    color = 0x2ecc71 if res_status == "win" else 0xe74c3c
+
+    # Создаем Embed для модераторов
+    hub_emb = discord.Embed(
+        title="⚔️ НОВАЯ ЗАЯВКА НА ПРОВЕРКУ",
+        description=f"Игрок {ctx.author.mention} подал заявку на обновление рейтинга.",
+        color=color,
+        timestamp=datetime.datetime.now()
+    )
+    hub_emb.add_field(name="🏆 Итог матча", value=f"**{res_status.upper()}**", inline=True)
+    hub_emb.add_field(name="📊 Статистика", value=f"K: `{k}` | A: `{a}` | D: `{d}`", inline=True)
+    hub_emb.add_field(name="📈 Ожидаемое ELO", value=f"**{elo_gain}**", inline=True)
     hub_emb.set_image(url=ctx.message.attachments[0].url)
     
-    # Payload для обработки реакции (скрыт в футере)
-    hub_emb.set_footer(text=f"UID:{ctx.author.id} | ELO:{elo_change} | K:{k} | A:{a} | D:{d} | T:{res_type}")
+    # Payload для обработки реакции (зашито в футер)
+    hub_emb.set_footer(text=f"UID:{ctx.author.id} | E:{elo_gain} | K:{k} | A:{a} | D:{d} | S:{res_status}")
 
     try:
-        hub_msg = await hub_channel.send(embed=hub_emb)
-        await hub_msg.add_reaction("✅")
-        await hub_msg.add_reaction("❌")
-        
-        # Ответ пользователю
-        confirm = discord.Embed(description=f"📡 **Данные отправлены!**\nВаша статистика `{k}/{a}/{d}` передана судьям в HUB.", color=0x5865f2)
-        await ctx.send(embed=confirm)
+        msg = await mod_channel.send(embed=hub_emb)
+        await msg.add_reaction("✅")
+        await msg.add_reaction("❌")
+        await ctx.send(f"📡 {ctx.author.mention}, твой результат отправлен на проверку в HUB!")
     except Exception as e:
-        await ctx.send(f"❌ Ошибка отправки в HUB: `{e}`")
+        await ctx.send(f"❌ Произошла ошибка при отправке: {e}")
 
-# --- [ 6. ОБРАБОТЧИК РЕАКЦИЙ (ЯДРО ПРОВЕРКИ) ] ---
+# ==========================================
+# 8. ОБРАБОТЧИК РЕАКЦИЙ (HUB LOGIC)
+# ==========================================
 @bot.event
 async def on_reaction_add(reaction, user):
-    # Игнорируем бота и реакции вне канала HUB
     if user.bot: return
-    if str(reaction.message.channel.id) != str(MOD_ID): return
+    if str(reaction.message.channel.id) != str(MOD_CHANNEL_ID): return
     if not reaction.message.embeds: return
 
     embed = reaction.message.embeds[0]
     if not embed.footer.text or "UID:" not in embed.footer.text: return
 
-    # Проверка прав (только админы могут одобрять)
+    # Только люди с правами модератора могут подтверждать
     if not user.guild_permissions.manage_messages:
         return
 
-    # Парсинг данных из Payload
+    # Парсим скрытые данные
     try:
-        raw_data = embed.footer.text.replace(" ", "").split("|")
-        p = {item.split(":")[0]: item.split(":")[1] for item in raw_data}
+        raw = embed.footer.text.replace(" ", "").split("|")
+        payload = {i.split(":")[0]: i.split(":")[1] for i in raw}
         
-        target_uid = int(p['UID'])
-        elo_diff = int(p['ELO'])
+        target_id = int(payload['UID'])
+        elo_diff = int(payload['E'])
     except Exception as e:
-        print(f"[ERROR] Ошибка парсинга Payloads: {e}")
+        logger.error(f"Ошибка парсинга Payload: {e}")
         return
 
-    u_data = db.get_user(target_uid)
+    target_user_data = db.get_user(target_id)
     guild = reaction.message.guild
-    target_member = guild.get_member(target_uid)
+    member = guild.get_member(target_id)
 
     if str(reaction.emoji) == "✅":
-        # Начисляем статы
-        u_data['elo'] += elo_diff
-        u_data['k'] += int(p['K'])
-        u_data['a'] += int(p['A'])
-        u_data['d'] += int(p['D'])
+        # Обновляем статы
+        target_user_data['elo'] += elo_diff
+        target_user_data['stats']['k'] += int(payload['K'])
+        target_user_data['stats']['a'] += int(payload['A'])
+        target_user_data['stats']['d'] += int(payload['D'])
         
-        if elo_diff > 0: u_data['wins'] += 1
-        else: u_data['losses'] += 1
+        if elo_diff > 0: target_user_data['stats']['w'] += 1
+        else: target_user_data['stats']['l'] += 1
         
         db.save()
-
-        # Обновляем роль
-        if target_member:
-            await manage_roles(target_member, u_data['elo'])
-
-        # Уведомление
-        notification = f"✅ **Одобрено!** Игрок <@{target_uid}> получил **{elo_diff} ELO**. (Итого: {u_data['elo']})"
-        await reaction.message.channel.send(notification, delete_after=10)
+        
+        if member:
+            await update_member_roles(member, target_user_data['elo'])
+        
+        await reaction.message.channel.send(f"✅ Результат игрока <@{target_id}> одобрен администратором **{user.name}**", delete_after=5)
         await reaction.message.delete()
 
     elif str(reaction.emoji) == "❌":
-        await reaction.message.channel.send(f"❌ **Отклонено!** Статистика <@{target_uid}> аннулирована.", delete_after=10)
+        await reaction.message.channel.send(f"❌ Заявка игрока <@{target_id}> отклонена модератором **{user.name}**", delete_after=5)
         await reaction.message.delete()
 
-# --- [ 7. ЭКОНОМИКА И ПРОФИЛЬ ] ---
+# ==========================================
+# 9. ЭКОНОМИКА (WORK, CASINO, PROFILE)
+# ==========================================
 @bot.command()
 async def work(ctx):
     u = db.get_user(ctx.author.id)
     now = int(time.time())
     
     if now < u['last_work']:
-        rem = u['last_work'] - now
-        return await ctx.send(f"⏳ **Рано!** Твои руки ещё дрожат. Приходи через **{rem // 60}м {rem % 60}с**.")
+        wait_sec = u['last_work'] - now
+        return await ctx.send(f"⏳ {ctx.author.name}, ты слишком устал. Возвращайся через **{wait_sec // 60}м {wait_sec % 60}с**.")
 
-    gain = random.randint(700, 1800)
-    u['money'] += gain
-    u['last_work'] = now + random.randint(300, 600) # КД 5-10 мин
+    reward = random.randint(400, 1200)
+    u['money'] += reward
+    # КД от 5 до 10 минут
+    u['last_work'] = now + random.randint(300, 600)
     db.save()
-    
-    emb = discord.Embed(description=f"💰 **{ctx.author.name}**, ты выполнил контракт и получил **{gain}$**", color=0x43b581)
+
+    emb = discord.Embed(
+        description=f"💰 **Успешная работа!**\nВы заработали **{reward}$**.\nСледующая смена через { (u['last_work']-now)//60 } мин.",
+        color=0x2ecc71
+    )
     await ctx.send(embed=emb)
 
 @bot.command()
@@ -227,70 +303,76 @@ async def profile(ctx, member: discord.Member = None):
     member = member or ctx.author
     u = db.get_user(member.id)
     
-    # Определение ранга текстом
-    rank_name = "Bronze"
-    for r, v in RANKS.items():
-        if u['elo'] >= v: rank_name = r
+    # Вычисляем текущий ранг для отображения
+    cur_rank = "🌑 Bronze"
+    for r_name, threshold in RANK_ROLES.items():
+        if u['elo'] >= threshold: cur_rank = r_name
 
-    emb = discord.Embed(title=f"📊 ДОСЬЕ: {member.name}", color=0x00d9ff)
-    emb.add_field(name="🏆 Ранг / ELO", value=f"**{rank_name}** ({u['elo']})", inline=True)
-    emb.add_field(name="💰 Кошелек", value=f"**{u['money']}$**", inline=True)
-    emb.add_field(name="⚔️ Стата K/A/D", value=f"`{u['k']} / {u['a']} / {u['d']}`", inline=False)
-    emb.add_field(name="🎮 Матчи", value=f"Побед: {u['wins']} | Лузов: {u['losses']}", inline=True)
+    emb = discord.Embed(title=f"👤 КАРТОЧКА ИГРОКА: {member.name}", color=0x00d9ff)
+    emb.add_field(name="🏆 Текущий Ранг", value=f"**{cur_rank}**", inline=True)
+    emb.add_field(name="📈 Рейтинг ELO", value=f"**{u['elo']}**", inline=True)
+    emb.add_field(name="💰 Баланс", value=f"**{u['money']}$**", inline=True)
+    
+    s = u['stats']
+    kda_ratio = round((s['k'] + s['a']) / s['d'], 2) if s['d'] > 0 else (s['k'] + s['a'])
+    emb.add_field(name="⚔️ Боевая статистика (K/A/D)", value=f"`{s['k']} / {s['a']} / {s['d']}` (KDA: {kda_ratio})", inline=False)
+    emb.add_field(name="🏁 Матчи", value=f"Побед: {s['w']} | Поражений: {s['l']}", inline=True)
     
     emb.set_thumbnail(url=member.display_avatar.url)
-    emb.set_footer(text="Evolution System Heavy Engine")
-    await ctx.send(embed=emb)
+    emb.set_footer(text="Evolution Ultimate • persistence system active")
+    await ctx.send(embed=embed)
 
-# --- [ 8. КРАСИВЫЙ HELP ] ---
 @bot.command()
-async def help(ctx):
-    emb = discord.Embed(title="💠 EVOLUTION ULTIMATE INTERFACE", color=0x2b2d31)
-    emb.description = "Все модули активны. Выберите категорию команд.\n" + "─" * 25
-    
-    emb.add_field(name="🎮 **GAMEPLAY**", value="`!result` - Отправить скриншот\n`!profile` - Твоя статистика\n`!top` - Лидерборд", inline=False)
-    emb.add_field(name="💸 **ECONOMY**", value="`!work` - Заработок (КД)\n`!casino` - Испытать удачу", inline=False)
-    
-    if ctx.author.guild_permissions.administrator:
-        emb.add_field(name="👑 **ADMIN**", value="`!set_elo @user [v]`\n`!clear [n]`\n`!set_money @user [v]`", inline=False)
-    
-    emb.set_footer(text="Система работает на ядре Gemini Flash 3.0")
-    await ctx.send(embed=emb)
+async def casino(ctx, amount: int):
+    u = db.get_user(ctx.author.id)
+    if amount <= 0 or amount > u['money']:
+        return await ctx.send("❌ У вас недостаточно средств или сумма некорректна!")
 
-# --- [ 9. АДМИНИСТРИРОВАНИЕ ] ---
+    if random.random() < 0.45: # 45% шанс выигрыша
+        u['money'] += amount
+        color, text = 0x2ecc71, f"🎰 **ВЫИГРЫШ!** Вы получили **{amount}$**"
+    else:
+        u['money'] -= amount
+        color, text = 0xe74c3c, f"📉 **ПРОИГРЫШ.** Вы потеряли **{amount}$**"
+    
+    db.save()
+    await ctx.send(embed=discord.Embed(description=text, color=color))
+
+# ==========================================
+# 10. АДМИН-КОМАНДЫ
+# ==========================================
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def set_elo(ctx, member: discord.Member, value: int):
     u = db.get_user(member.id)
     u['elo'] = value
     db.save()
-    await manage_roles(member, value)
-    await ctx.send(f"✅ Установлено **{value} ELO** для {member.mention}")
+    await update_member_roles(member, value)
+    await ctx.send(f"✅ Игроку {member.mention} установлен рейтинг **{value} ELO**.")
 
 @bot.command()
 @commands.has_permissions(manage_messages=True)
 async def clear(ctx, amount: int = 10):
     await ctx.channel.purge(limit=amount + 1)
+    await ctx.send(f"🧹 Удалено **{amount}** сообщений.", delete_after=3)
 
-# --- [ 10. ЗАПУСК ] ---
+# ==========================================
+# 11. СОБЫТИЯ И ЗАПУСК
+# ==========================================
 @bot.event
 async def on_ready():
-    print(f"""
-    #######################################
-    # EVOLUTION SYSTEM LOADED SUCCESSFULLY #
-    # Logged as: {bot.user.name}             #
-    #######################################
-    """)
-    if not stay_active.is_running():
-        stay_active.start()
+    logger.info(f"--- Evolution Engine v10 запущен как {bot.user} ---")
+    if not stay_active_loop.is_running():
+        stay_active_loop.start()
 
 @tasks.loop(minutes=2)
-async def stay_active():
-    await bot.change_presence(activity=discord.Streaming(name="!help | Evolution", url="https://twitch.tv/discord"))
+async def stay_active_loop():
+    # Статус стриминга помогает обходить некоторые ограничения хостинга
+    await bot.change_presence(activity=discord.Streaming(name="!help | Evolution Engine", url="https://twitch.tv/discord"))
 
 if __name__ == "__main__":
-    keep_alive()
+    keep_alive() # Запуск Flask в потоке
     try:
         bot.run(TOKEN)
     except Exception as e:
-        print(f"Ошибка запуска: {e}")
+        logger.critical(f"Критическая ошибка запуска: {e}")
