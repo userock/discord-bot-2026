@@ -1,3 +1,11 @@
+import pytesseract
+from PIL import Image
+
+# Указываем ИИ, где лежат его "глаза"
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
+# Теперь твой бот сможет выполнять эту магию:
+# text = pytesseract.image_to_string(Image.open('твой_скриншот.png'))
 import discord
 from discord.ext import commands, tasks
 import os, json, random, datetime, time, asyncio, logging
